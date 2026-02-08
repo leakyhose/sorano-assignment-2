@@ -3,6 +3,8 @@ import { z } from "zod";
 
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 
+// Default set of daily weather variables that cover the most common forecast needs.
+// The LLM can override these when the user asks about specific metrics.
 const DEFAULT_DAILY_VARIABLES = [
   "temperature_2m_max",
   "temperature_2m_min",
@@ -40,6 +42,8 @@ export const weatherTool = tool({
       ),
   }),
   execute: async ({ latitude, longitude, forecast_days, daily }) => {
+    // Build query string, timezone "auto" lets Open-Meteo resolve the
+    // correct timezone from the coordinates, so the LLM doesn't need to.
     const params = new URLSearchParams({
       latitude: latitude.toString(),
       longitude: longitude.toString(),
@@ -51,13 +55,31 @@ export const weatherTool = tool({
     try {
       const response = await fetch(`${OPEN_METEO_BASE_URL}?${params}`);
 
+      // Surface the API error body so the LLM can relay a meaningful message
       if (!response.ok) {
-        return { error: `Open-Meteo API error: ${response.status} ${response.statusText}` };
+        const body = await response.text();
+        return { error: `Open-Meteo API error (${response.status}): ${body}` };
       }
 
       const data = await response.json();
-      return data;
+
+      // Sanity-check: the daily block should always be present when daily
+      // variables are requested. Guard against unexpected response shapes.
+      if (!data.daily) {
+        return { error: "Unexpected API response: missing daily forecast data" };
+      }
+
+      // Return forecast data with units so the LLM can format values correctly
+      return {
+        latitude: data.latitude,
+        longitude: data.longitude,
+        elevation: data.elevation,
+        timezone: data.timezone,
+        daily_units: data.daily_units,
+        daily: data.daily,
+      };
     } catch (err: unknown) {
+      // Covers network failures, DNS errors, timeouts, etc.
       const message = err instanceof Error ? err.message : String(err);
       return { error: `Failed to fetch weather data: ${message}` };
     }
